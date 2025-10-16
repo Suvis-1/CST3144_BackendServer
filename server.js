@@ -85,30 +85,37 @@ app.post('/orders', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'Database not connected' });
 
   try {
-    const { name, phone, lessons } = req.body;
+    const { name, phone, lessons, notes } = req.body;
 
-    // Basic validation
+    // Validate name
     if (!name || !/^[A-Za-z\s]+$/.test(name)) {
       return res.status(400).json({ error: 'Name is required and must contain letters only' });
     }
 
+    // Validate phone
     if (!phone || !/^\d+$/.test(phone)) {
       return res.status(400).json({ error: 'Phone is required and must contain numbers only' });
     }
 
+    // Validate lessons
     if (!Array.isArray(lessons) || lessons.length === 0) {
       return res.status(400).json({ error: 'Lessons must be a non-empty array' });
     }
-
-    // validate each lesson object
     for (const lesson of lessons) {
       if (!lesson.id || !lesson.qty || lesson.qty <= 0) {
         return res.status(400).json({ error: 'Each lesson must have a valid id and qty > 0' });
       }
     }
 
+    // Validate notes (max 250 chars)
+    if (notes && notes.length > 250) {
+      return res.status(400).json({ error: 'Notes must be 250 characters or fewer' });
+    }
+
+    // Build order object
+    const order = { name, phone, lessons, notes: notes || '' };
+
     // Insert into DB
-    const order = { name, phone, lessons };
     const result = await db.collection('orders').insertOne(order);
 
     res.json({ insertedId: result.insertedId });
@@ -116,7 +123,6 @@ app.post('/orders', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 app.put('/lessons/:id', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'Database not connected' });

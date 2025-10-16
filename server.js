@@ -28,7 +28,6 @@ async function connectDB() {
 
 connectDB()
 
-
 // Routes
 app.get('/lessons', async (req, res) => {
   try {
@@ -57,6 +56,27 @@ app.get('/search', async (req, res) => {
   }
 })
 
+app.post('/orders', async (req, res) => {
+  try {
+    const order = req.body
+    const result = await db.collection('orders').insertOne(order)
+    res.json({ id: result.insertedId })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/lessons/:id', async (req, res) => {
+  const id = req.params.id
+  const update = req.body  // e.g., { space: newSpace }
+  try {
+    const result = await db.collection('lessons').updateOne({ _id: new ObjectId(id) }, { $set: update })
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Lesson not found' })
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`)

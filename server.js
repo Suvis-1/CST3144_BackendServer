@@ -83,14 +83,40 @@ app.get('/search', async (req, res) => {
 
 app.post('/orders', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'Database not connected' });
+
   try {
-    const order = req.body; // { name, phone, lessons: [{id, qty}] }
+    const { name, phone, lessons } = req.body;
+
+    // Basic validation
+    if (!name || !/^[A-Za-z\s]+$/.test(name)) {
+      return res.status(400).json({ error: 'Name is required and must contain letters only' });
+    }
+
+    if (!phone || !/^\d+$/.test(phone)) {
+      return res.status(400).json({ error: 'Phone is required and must contain numbers only' });
+    }
+
+    if (!Array.isArray(lessons) || lessons.length === 0) {
+      return res.status(400).json({ error: 'Lessons must be a non-empty array' });
+    }
+
+    // validate each lesson object
+    for (const lesson of lessons) {
+      if (!lesson.id || !lesson.qty || lesson.qty <= 0) {
+        return res.status(400).json({ error: 'Each lesson must have a valid id and qty > 0' });
+      }
+    }
+
+    // Insert into DB
+    const order = { name, phone, lessons };
     const result = await db.collection('orders').insertOne(order);
+
     res.json({ insertedId: result.insertedId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 app.put('/lessons/:id', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'Database not connected' });
@@ -112,8 +138,8 @@ app.put('/lessons/:id', async (req, res) => {
 });
 
 // 404 fallback
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not found' });
+app.use('/images', express.static(path.join(__dirname, 'public/images')), (req, res) => {
+  res.status(404).json({ error: 'Image not found' });
 });
 
 // Start server after DB connection

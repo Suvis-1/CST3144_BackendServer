@@ -112,6 +112,18 @@ app.post('/orders', async (req, res) => {
       return res.status(400).json({ error: 'Notes must be 250 characters or fewer' });
     }
 
+    // Decrement availability for each lesson
+    for (const lesson of lessons) {
+      const result = await db.collection('lessons').updateOne(
+        { _id: new ObjectId(lesson.id), space: { $gte: lesson.qty } }, 
+        { $inc: { space: -lesson.qty } }
+      )
+
+      if (result.matchedCount === 0) {
+        return res.status(400).json({ error: `Not enough availability for lesson ${lesson.id}` })
+      }
+    }
+
     // Build order object
     const order = { name, phone, lessons, notes: notes || '' };
 

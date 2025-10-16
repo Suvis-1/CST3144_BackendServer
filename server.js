@@ -92,9 +92,9 @@ app.post('/orders', async (req, res) => {
       return res.status(400).json({ error: 'Name is required and must contain letters only' });
     }
 
-    // Validate phone
-    if (!phone || !/^\d+$/.test(phone)) {
-      return res.status(400).json({ error: 'Phone is required and must contain numbers only' });
+    // Validate UK phone number: must start with 0 and be exactly 11 digits
+    if (!phone || !/^0\d{10}$/.test(phone)) {
+    return res.status(400).json({ error: 'Phone must start with 0 and be exactly 11 digits' });
     }
 
     // Validate lessons

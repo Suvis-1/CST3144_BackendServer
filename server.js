@@ -29,6 +29,35 @@ async function connectDB() {
 connectDB()
 
 
+// Routes
+app.get('/lessons', async (req, res) => {
+  try {
+    const lessons = await db.collection('lessons').find({}).toArray()
+    res.json(lessons)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/search', async (req, res) => {
+  const q = req.query.q
+  if (!q) return res.json([])
+  try {
+    const lessons = await db.collection('lessons').find({
+      $or: [
+        { topic: { $regex: q, $options: 'i' } },
+        { location: { $regex: q, $options: 'i' } },
+        { price: { $regex: q, $options: 'i' } },
+        { space: { $regex: q, $options: 'i' } }
+      ]
+    }).toArray()
+    res.json(lessons)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`)
 })

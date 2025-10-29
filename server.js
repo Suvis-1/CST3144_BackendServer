@@ -2,6 +2,7 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const path = require('path');
+const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
@@ -9,15 +10,7 @@ const port = process.env.PORT;
 
 // Middleware
 app.use(express.json()); // Parse JSON bodies
-
-// CORS for frontend
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-  if (req.method === 'OPTIONS') res.sendStatus(200);
-  else next();
-});
+app.use(cors());         // Enable CORS for all origins
 
 // Logger middleware
 app.use((req, res, next) => {
@@ -44,12 +37,19 @@ async function connectDB() {
   }
 }
 
+function normalizeLessons(lessons) {
+  return lessons.map(l => ({
+    ...l,
+    totalSpace: l.space
+  }));
+}
+
 // Routes
 app.get('/lessons', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'Database not connected' });
   try {
     const lessons = await db.collection('lessons').find({}).toArray();
-    res.json(lessons);
+    res.json(normalizeLessons(lessons));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -75,7 +75,7 @@ app.get('/search', async (req, res) => {
     }
 
     const lessons = await db.collection('lessons').find({ $or: conditions }).toArray();
-    res.json(lessons);
+    res.json(normalizeLessons(lessons));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -92,9 +92,9 @@ app.post('/orders', async (req, res) => {
       return res.status(400).json({ error: 'Name is required and must contain letters only' });
     }
 
-    // Validate UK phone number: must start with 0 and be exactly 11 digits
+    // Validate UK phone number
     if (!phone || !/^0\d{10}$/.test(phone)) {
-    return res.status(400).json({ error: 'Phone must start with 0 and be exactly 11 digits' });
+      return res.status(400).json({ error: 'Phone must start with 0 and be exactly 11 digits' });
     }
 
     // Validate lessons
@@ -107,7 +107,7 @@ app.post('/orders', async (req, res) => {
       }
     }
 
-    // Validate notes (max 250 chars)
+    // Validate notes
     if (notes && notes.length > 250) {
       return res.status(400).json({ error: 'Notes must be 250 characters or fewer' });
     }
@@ -115,17 +115,17 @@ app.post('/orders', async (req, res) => {
     // Decrement availability for each lesson
     for (const lesson of lessons) {
       const result = await db.collection('lessons').updateOne(
-        { _id: new ObjectId(lesson.id), space: { $gte: lesson.qty } }, 
+        { _id: new ObjectId(lesson.id), space: { $gte: lesson.qty } },
         { $inc: { space: -lesson.qty } }
-      )
+      );
 
       if (result.matchedCount === 0) {
-        return res.status(400).json({ error: `Not enough availability for lesson ${lesson.id}` })
+        return res.status(400).json({ error: `Not enough availability for lesson ${lesson.id}` });
       }
     }
 
     // Build order object
-    const order = { name, phone, lessons, notes: notes || '' };
+    const order = { name, phone, lessons, notes: notes || '', createdAt: new Date() };
 
     // Insert into DB
     const result = await db.collection('orders').insertOne(order);
@@ -155,9 +155,9 @@ app.put('/lessons/:id', async (req, res) => {
   }
 });
 
-// 404 fallback
-app.use('/images', express.static(path.join(__dirname, 'public/images')), (req, res) => {
-  res.status(404).json({ error: 'Image not found' });
+// 404 fallback for unknown routes
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
 // Start server after DB connection

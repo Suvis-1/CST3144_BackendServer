@@ -126,6 +126,11 @@ MONGODB_URI=your-mongodb-atlas-uri
 
 ---
 
+## Sample postman collection queries (for testing purposes)
+[Postman sample collection](Afterschool_Lessons_API.postman_collection.json)
+
+---
+
 ## 📜 License
 
 This project is licensed under the MIT License.  

@@ -1,0 +1,161 @@
+{
+	"info": {
+		"_postman_id": "7656ab53-f268-4f5b-94cb-ee028df68daf",
+		"name": "Afterschool_Lessons_API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "49640724"
+	},
+	"item": [
+		{
+			"name": "Lessons",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "https://cst3144-backendserver.onrender.com/lessons",
+					"protocol": "https",
+					"host": [
+						"cst3144-backendserver",
+						"onrender",
+						"com"
+					],
+					"path": [
+						"lessons"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Orders manchester math",
+			"protocolProfileBehavior": {
+				"disabledSystemHeaders": {}
+			},
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"name\": \"Toby Ped\",\r\n  \"phone\": \"07123456789\",\r\n  \"lessons\": [\r\n    { \"id\": \"68ee2314f6ae0d94ac4ec6b9\", \"qty\": 5 }\r\n  ],\r\n  \"notes\": \"Evening classes preferred\"\r\n}\r\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://cst3144-backendserver.onrender.com/orders",
+					"protocol": "https",
+					"host": [
+						"cst3144-backendserver",
+						"onrender",
+						"com"
+					],
+					"path": [
+						"orders"
+					],
+					"query": [
+						{
+							"key": "",
+							"value": null,
+							"disabled": true
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Maths Manchester Space update",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"space\": 20\r\n}\r\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://cst3144-backendserver.onrender.com/lessons/68ee2314f6ae0d94ac4ec6b9",
+					"protocol": "https",
+					"host": [
+						"cst3144-backendserver",
+						"onrender",
+						"com"
+					],
+					"path": [
+						"lessons",
+						"68ee2314f6ae0d94ac4ec6b9"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "search manche",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "https://cst3144-backendserver.onrender.com/search?q=manche",
+					"protocol": "https",
+					"host": [
+						"cst3144-backendserver",
+						"onrender",
+						"com"
+					],
+					"path": [
+						"search"
+					],
+					"query": [
+						{
+							"key": "q",
+							"value": "manche"
+						}
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	]
+}

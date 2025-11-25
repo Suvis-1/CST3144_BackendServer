@@ -1,43 +1,36 @@
-// server.js
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const path = require('path');
 const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT;
 
 // Middleware
-app.use(express.json()); // Parse JSON bodies
-app.use(cors());         // Enable CORS for all origins
+app.use(express.json());
+app.use(cors());
 
-// Logger middleware
-// Logs every request with timestamp, method, URL
+// Logger
 app.use((req, res, next) => {
-console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
 
-// Static middleware for images
-// Custom handler: serves images if they exist, otherwise returns JSON error
+// Serve images
 app.get('/images/:filename', (req, res) => {
   const filePath = path.join(__dirname, 'public/images', req.params.filename);
-
   res.sendFile(filePath, (err) => {
     if (err) {
-      if (err.code === 'ENOENT') {
-        // File not found
-        return res.status(404).json({ error: 'Image not found' });
-      }
-      // Some other error while trying to serve the file
+      if (err.code === 'ENOENT') return res.status(404).json({ error: 'Image not found' });
       return res.status(500).json({ error: 'Error serving image' });
     }
   });
 });
 
-// MongoDB Connection
-// Connects to MongoDB Atlas using the native driver
+// MongoDB
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri);
 let db;
@@ -45,7 +38,7 @@ let db;
 async function connectDB() {
   try {
     await client.connect();
-    db = client.db('afterschool'); // Database name
+    db = client.db('afterschool');
     console.log('Connected to MongoDB Atlas');
   } catch (err) {
     console.error('MongoDB connection error:', err);
@@ -53,59 +46,39 @@ async function connectDB() {
   }
 }
 
-// Helper: normalize lessons by adding totalSpace field
+// Normalize lessons
 function normalizeLessons(lessons) {
-  return lessons.map(l => ({
-    ...l,
-    totalSpace: l.space
-  }));
+  return lessons.map(l => ({ ...l, totalSpace: l.space }));
 }
 
-// ****Routes*****
+// ***** User Routes *****
 
 // Get all lessons
-// Returns all lessons as JSON
 app.get('/lessons', async (req, res) => {
-  if (!db) return res.status(500).json({ error: 'Database not connected' });
   try {
     const lessons = await db.collection('lessons').find({}).toArray();
     res.json(normalizeLessons(lessons));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Hybrid search: matches topic/location (text) or price/space (numeric)
+// Search lessons
 app.get('/search', async (req, res) => {
-  if (!db) return res.status(500).json({ error: 'Database not connected' });
-
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: 'Query parameter "q" required' });
-
   try {
     const conditions = [
       { topic: { $regex: q, $options: 'i' } },
       { location: { $regex: q, $options: 'i' } }
     ];
-
     const num = Number(q);
-    if (!isNaN(num)) {
-      conditions.push({ price: num });
-      conditions.push({ space: num });
-    }
-
+    if (!isNaN(num)) { conditions.push({ price: num }); conditions.push({ space: num }); }
     const lessons = await db.collection('lessons').find({ $or: conditions }).toArray();
     res.json(normalizeLessons(lessons));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Orders
-// Validates and saves a new order, then decrements lesson availability
+// Place order
 app.post('/orders', async (req, res) => {
-  if (!db) return res.status(500).json({ error: 'Database not connected' });
-
   try {
     const { name, phone, lessons, notes } = req.body;
 
@@ -132,7 +105,6 @@ app.post('/orders', async (req, res) => {
       }
     }
 
-    // Validate notes
     if (notes && notes.length > 250) {
       return res.status(400).json({ error: 'Notes must be 250 characters or fewer' });
     }
@@ -147,29 +119,17 @@ app.post('/orders', async (req, res) => {
         return res.status(400).json({ error: `Not enough availability for lesson ${lesson.id}` });
       }
     }
-    
-    // Build order objects
-    const order = { name, phone, lessons, notes: notes || '', createdAt: new Date() };
-    
-    // Insert orders into DB
-    const result = await db.collection('orders').insertOne(order);
 
+    const order = { name, phone, lessons, notes: notes || '', createdAt: new Date() };
+    const result = await db.collection('orders').insertOne(order);
     res.json({ insertedId: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Update lesson
-// Updates lesson attributes with validation (e.g. no negative space/price)
 app.put('/lessons/:id', async (req, res) => {
-  if (!db) return res.status(500).json({ error: 'Database not connected' });
-
   const id = req.params.id;
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).json({ error: 'Invalid lesson ID' });
-  }
-
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
   const update = req.body;
   const allowed = ['topic', 'location', 'price', 'space', 'icon'];
   const invalidKeys = Object.keys(update).filter(k => !allowed.includes(k));
@@ -178,56 +138,106 @@ app.put('/lessons/:id', async (req, res) => {
   }
 
   try {
-    // Field-specific validation
-    if (update.space !== undefined) {
-      if (typeof update.space !== 'number' || update.space < 0) {
-        return res.status(400).json({ error: 'Space must be a non‑negative number' });
-      }
+    if (update.space !== undefined && (typeof update.space !== 'number' || update.space < 0)) {
+      return res.status(400).json({ error: 'Space must be non‑negative number' });
     }
-    if (update.price !== undefined) {
-      if (typeof update.price !== 'number' || update.price < 0) {
-        return res.status(400).json({ error: 'Price must be a non‑negative number' });
-      }
+    if (update.price !== undefined && (typeof update.price !== 'number' || update.price < 0)) {
+      return res.status(400).json({ error: 'Price must be non‑negative number' });
     }
     if (update.topic && (typeof update.topic !== 'string' || update.topic.length > 50)) {
-      return res.status(400).json({ error: 'Topic must be a string up to 50 characters' });
+      return res.status(400).json({ error: 'Topic must be string up to 50 chars' });
     }
     if (update.location && (typeof update.location !== 'string' || update.location.length > 50)) {
-      return res.status(400).json({ error: 'Location must be a string up to 50 characters' });
+      return res.status(400).json({ error: 'Location must be string up to 50 chars' });
     }
     if (update.icon && (typeof update.icon !== 'string' || !update.icon.endsWith('.png'))) {
       return res.status(400).json({ error: 'Icon must be a .png filename' });
     }
 
-    // Perform update
     const result = await db.collection('lessons').updateOne(
       { _id: new ObjectId(id) },
       { $set: update }
     );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: 'Lesson not found' });
-    }
-
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
     res.json(result);
-  } catch (err) {
-    if (err.code === 121) {
-      return res.status(400).json({ error: 'Validation failed: ' + err.errmsg });
-    }
-    res.status(500).json({ error: err.message });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ***** Admin Routes *****
+
+// List all orders
+app.get('/orders', async (req, res) => {
+  try {
+    const orders = await db.collection('orders').find({}).toArray();
+    res.json(orders);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Create new lesson
+app.post('/lessons', async (req, res) => {
+  const { topic, location, price, space, icon } = req.body;
+
+  if (!topic || !location || !icon) {
+    return res.status(400).json({ error: 'Missing required fields' });
   }
+  if (typeof topic !== 'string' || topic.length > 50) {
+    return res.status(400).json({ error: 'Topic must be string up to 50 chars' });
+  }
+  if (typeof location !== 'string' || location.length > 50) {
+    return res.status(400).json({ error: 'Location must be string up to 50 chars' });
+  }
+  if (typeof price !== 'number' || price < 0) {
+    return res.status(400).json({ error: 'Price must be non‑negative number' });
+  }
+  if (typeof space !== 'number' || space < 0) {
+    return res.status(400).json({ error: 'Space must be non‑negative number' });
+  }
+  if (typeof icon !== 'string' || !icon.endsWith('.png')) {
+    return res.status(400).json({ error: 'Icon must be a .png filename' });
+  }
+
+  const lesson = { topic, location, price, space, icon, totalSpace: space };
+  const result = await db.collection('lessons').insertOne(lesson);
+  res.json({ insertedId: result.insertedId });
+});
+
+// Delete lesson
+app.delete('/lessons/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
+  const result = await db.collection('lessons').deleteOne({ _id: new ObjectId(id) });
+  if (result.deletedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
+  res.json({ ok: true });
+});
+
+// Icons management
+const ICONS_DIR = path.join(__dirname, 'public/images');
+if (!fs.existsSync(ICONS_DIR)) fs.mkdirSync(ICONS_DIR);
+
+const storage = multer.diskStorage({
+  destination: ICONS_DIR,
+  filename: (req, file, cb) => {
+    if (!file.originalname.endsWith('.png')) {
+      return cb(new Error('Only .png files allowed'));
+    }
+    cb(null, file.originalname);
+  }
+});
+const upload = multer({ storage });
+
+app.get('/icons', (req, res) => {
+  const files = fs.readdirSync(ICONS_DIR);
+  res.json(files);
+});
+
+app.post('/icons', upload.single('file'), (req, res) => {
+  res.json({ filename: req.file.originalname });
 });
 
 // 404 fallback
-// Handles any unknown routes
-app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
+app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 
 // Start server
-// Connect to DB first, then start listening
 connectDB().then(() => {
-  app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-  });
+  app.listen(port, () => console.log(`Server running on port ${port}`));
 });

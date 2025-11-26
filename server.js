@@ -4,6 +4,7 @@ const path = require('path');
 const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const app = express();
@@ -51,7 +52,32 @@ function normalizeLessons(lessons) {
   return lessons.map(l => ({ ...l, totalSpace: l.space }));
 }
 
-// ***** User Routes *****
+// ***** Auth Route for Admin Panel *****
+app.post('/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
+    // issue JWT with 1h expiry
+    const token = jwt.sign({ user: username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token });
+  } else {
+    res.status(401).json({ error: 'Invalid credentials' });
+  }
+});
+
+// Middleware to verify token (used only for admin routes)
+function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+  const token = authHeader.split(' ')[1];
+  try {
+    jwt.verify(token, process.env.JWT_SECRET); // throws if expired/invalid
+    next();
+  } catch (err) {
+    return res.status(403).json({ error: 'Token expired or invalid' });
+  }
+}
+
+// ***** Customer Routes  *****
 
 // Get all lessons
 app.get('/lessons', async (req, res) => {
@@ -126,7 +152,7 @@ app.post('/orders', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Update lesson
+// Update lesson (this is to decrement spaces after customers order)
 app.put('/lessons/:id', async (req, res) => {
   const id = req.params.id;
   if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
@@ -166,7 +192,7 @@ app.put('/lessons/:id', async (req, res) => {
 // ***** Admin Routes *****
 
 // List all orders
-app.get('/orders', async (req, res) => {
+app.get('/orders', verifyToken, async (req, res) => {
   try {
     const orders = await db.collection('orders').find({}).toArray();
     res.json(orders);
@@ -174,7 +200,7 @@ app.get('/orders', async (req, res) => {
 });
 
 // Create new lesson
-app.post('/lessons', async (req, res) => {
+app.post('/lessons', verifyToken, async (req, res) => {
   const { topic, location, price, space, icon } = req.body;
 
   if (!topic || !location || !icon) {
@@ -196,18 +222,26 @@ app.post('/lessons', async (req, res) => {
     return res.status(400).json({ error: 'Icon must be a .png filename' });
   }
 
-  const lesson = { topic, location, price, space, icon, totalSpace: space };
-  const result = await db.collection('lessons').insertOne(lesson);
-  res.json({ insertedId: result.insertedId });
+  try {
+    const lesson = { topic, location, price, space, icon, totalSpace: space };
+    const result = await db.collection('lessons').insertOne(lesson);
+    res.json({ insertedId: result.insertedId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Delete lesson
-app.delete('/lessons/:id', async (req, res) => {
+app.delete('/lessons/:id', verifyToken, async (req, res) => {
   const id = req.params.id;
   if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
-  const result = await db.collection('lessons').deleteOne({ _id: new ObjectId(id) });
-  if (result.deletedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
-  res.json({ ok: true });
+  try {
+    const result = await db.collection('lessons').deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Icons management
@@ -225,12 +259,16 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-app.get('/icons', (req, res) => {
-  const files = fs.readdirSync(ICONS_DIR);
-  res.json(files);
+app.get('/icons', async (req, res) => {
+  try {
+    const files = fs.readdirSync(ICONS_DIR);
+    res.json(files);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/icons', upload.single('file'), (req, res) => {
+app.post('/icons', verifyToken, upload.single('file'), (req, res) => {
   res.json({ filename: req.file.originalname });
 });
 

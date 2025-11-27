@@ -13,8 +13,6 @@ const port = process.env.PORT;
 // Middleware
 app.use(express.json());
 app.use(cors());
-
-// Logger
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
@@ -23,11 +21,8 @@ app.use((req, res, next) => {
 // Serve images
 app.get('/images/:filename', (req, res) => {
   const filePath = path.join(__dirname, 'public/images', req.params.filename);
-  res.sendFile(filePath, (err) => {
-    if (err) {
-      if (err.code === 'ENOENT') return res.status(404).json({ error: 'Image not found' });
-      return res.status(500).json({ error: 'Error serving image' });
-    }
+  res.sendFile(filePath, err => {
+    if (err) res.status(404).json({ error: 'Image not found' });
   });
 });
 
@@ -37,14 +32,17 @@ const client = new MongoClient(uri);
 let db;
 
 async function connectDB() {
-  try {
-    await client.connect();
-    db = client.db('afterschool');
-    console.log('Connected to MongoDB Atlas');
-  } catch (err) {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  }
+  await client.connect();
+  db = client.db('afterschool');
+  console.log('Connected to MongoDB Atlas');
+
+  // Create counters collection if not exists
+  const counters = db.collection('counters');
+  await counters.updateOne(
+    { _id: 'orderNumber' },
+    { $setOnInsert: { seq: 0 } },
+    { upsert: true }
+  );
 }
 
 // Normalize lessons
@@ -52,11 +50,10 @@ function normalizeLessons(lessons) {
   return lessons.map(l => ({ ...l, totalSpace: l.space }));
 }
 
-// ***** Auth Route for Admin Panel *****
+// ***** AUTH *****
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
   if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
-    // issue JWT with 1h expiry
     const token = jwt.sign({ user: username }, process.env.JWT_SECRET, { expiresIn: '1h' });
     res.json({ token });
   } else {
@@ -64,132 +61,123 @@ app.post('/login', (req, res) => {
   }
 });
 
-// Middleware to verify token (used only for admin routes)
 function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
   const token = authHeader.split(' ')[1];
   try {
-    jwt.verify(token, process.env.JWT_SECRET); // throws if expired/invalid
+    jwt.verify(token, process.env.JWT_SECRET);
     next();
-  } catch (err) {
-    return res.status(403).json({ error: 'Token expired or invalid' });
+  } catch {
+    res.status(403).json({ error: 'Invalid/expired token' });
   }
 }
 
-// ***** Customer Routes  *****
-
-// Get all lessons
+// ***** PUBLIC ROUTES *****
 app.get('/lessons', async (req, res) => {
-  try {
-    const lessons = await db.collection('lessons').find({}).toArray();
-    res.json(normalizeLessons(lessons));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  const lessons = await db.collection('lessons').find({}).toArray();
+  res.json(normalizeLessons(lessons));
 });
 
-// Search lessons
 app.get('/search', async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.status(400).json({ error: 'Query parameter "q" required' });
-  try {
-    const conditions = [
-      { topic: { $regex: q, $options: 'i' } },
-      { location: { $regex: q, $options: 'i' } }
-    ];
-    const num = Number(q);
-    if (!isNaN(num)) { conditions.push({ price: num }); conditions.push({ space: num }); }
-    const lessons = await db.collection('lessons').find({ $or: conditions }).toArray();
-    res.json(normalizeLessons(lessons));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  const q = req.query.q?.trim();
+  if (!q) return res.status(400).json({ error: 'Query required' });
+
+  const conditions = [
+    { topic: { $regex: q, $options: 'i' } },
+    { location: { $regex: q, $options: 'i' } }
+  ];
+  const num = Number(q);
+  if (!isNaN(num)) conditions.push({ price: num }, { space: num });
+
+  const lessons = await db.collection('lessons').find({ $or: conditions }).toArray();
+  res.json(normalizeLessons(lessons));
 });
 
-// Place order
+// ***** PLACE ORDER  *****
 app.post('/orders', async (req, res) => {
   try {
     const { name, phone, lessons, notes } = req.body;
 
-    // Validate name
-    if (!name || !/^[A-Za-z\s]{2,50}$/.test(name)) {
-      return res.status(400).json({ error: 'Name must be 2–50 letters only' });
-    }
+    // Validation
+    if (!name || !/^[A-Za-z\s]{2,50}$/.test(name))
+      return res.status(400).json({ error: 'Invalid name' });
+    if (!phone || !/^0\d{10}$/.test(phone))
+      return res.status(400).json({ error: 'Invalid phone' });
+    if (!Array.isArray(lessons) || lessons.length === 0)
+      return res.status(400).json({ error: 'Select at least one lesson' });
 
-    // Validate UK phone number
-    if (!phone || !/^0\d{10}$/.test(phone)) {
-      return res.status(400).json({ error: 'Phone must start with 0 and be exactly 11 digits' });
-    }
-
-    // Validate lessons
-    if (!Array.isArray(lessons) || lessons.length === 0) {
-      return res.status(400).json({ error: 'Lessons must be a non-empty array' });
-    }
-    for (const lesson of lessons) {
-      if (!lesson.id || !ObjectId.isValid(lesson.id)) {
-        return res.status(400).json({ error: 'Invalid lesson ID' });
-      }
-      if (!Number.isInteger(lesson.qty) || lesson.qty <= 0) {
-        return res.status(400).json({ error: 'Quantity must be a positive integer' });
-      }
-    }
-
-    if (notes && notes.length > 250) {
-      return res.status(400).json({ error: 'Notes must be 250 characters or fewer' });
-    }
-
-    // Decrement availability
-    for (const lesson of lessons) {
+    // Decrease spaces
+    for (const l of lessons) {
       const result = await db.collection('lessons').updateOne(
-        { _id: new ObjectId(lesson.id), space: { $gte: lesson.qty } },
-        { $inc: { space: -lesson.qty } }
+        { _id: new ObjectId(l.id), space: { $gte: l.qty } },
+        { $inc: { space: -l.qty } }
       );
-      if (result.matchedCount === 0) {
-        return res.status(400).json({ error: `Not enough availability for lesson ${lesson.id}` });
-      }
+      if (result.matchedCount === 0)
+        return res.status(400).json({ error: `Not enough space for lesson ${l.id}` });
     }
 
-    const order = { name, phone, lessons, notes: notes || '', createdAt: new Date() };
-    const result = await db.collection('orders').insertOne(order);
-    res.json({ insertedId: result.insertedId });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Update lesson (this is to decrement spaces after customers order)
-app.put('/lessons/:id', async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
-  const update = req.body;
-  const allowed = ['topic', 'location', 'price', 'space', 'icon'];
-  const invalidKeys = Object.keys(update).filter(k => !allowed.includes(k));
-  if (invalidKeys.length > 0) {
-    return res.status(400).json({ error: `Invalid fields: ${invalidKeys.join(', ')}` });
-  }
-
-  try {
-    if (update.space !== undefined && (typeof update.space !== 'number' || update.space < 0)) {
-      return res.status(400).json({ error: 'Space must be non‑negative number' });
-    }
-    if (update.price !== undefined && (typeof update.price !== 'number' || update.price < 0)) {
-      return res.status(400).json({ error: 'Price must be non‑negative number' });
-    }
-    if (update.topic && (typeof update.topic !== 'string' || update.topic.length > 50)) {
-      return res.status(400).json({ error: 'Topic must be string up to 50 chars' });
-    }
-    if (update.location && (typeof update.location !== 'string' || update.location.length > 50)) {
-      return res.status(400).json({ error: 'Location must be string up to 50 chars' });
-    }
-    if (update.icon && (typeof update.icon !== 'string' || !update.icon.endsWith('.png'))) {
-      return res.status(400).json({ error: 'Icon must be a .png filename' });
-    }
-
-    const result = await db.collection('lessons').updateOne(
-      { _id: new ObjectId(id) },
-      { $set: update }
+    // Generate order number
+    const counter = await db.collection('counters').findOneAndUpdate(
+      { _id: 'orderNumber' },
+      { $inc: { seq: 1 } },
+      { returnDocument: 'after', upsert: true }
     );
-    if (result.matchedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
-    res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const orderNumber = `ORD-${new Date().getFullYear()}-${String(counter.value.seq).padStart(4, '0')}`;
+
+    const order = {
+      orderNumber,
+      name,
+      phone,
+      lessons: lessons.map(l => ({ lessonId: new ObjectId(l.id), qty: l.qty })),
+      notes: notes || '',
+      status: 'pending', 
+      createdAt: new Date()
+    };
+
+    const result = await db.collection('orders').insertOne(order);
+    res.json({ insertedId: result.insertedId, orderNumber });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ***** Admin Routes *****
+// ***** ADMIN ROUTES *****
+app.get('/orders', verifyToken, async (req, res) => {
+  const orders = await db.collection('orders').find({}).sort({ createdAt: -1 }).toArray();
+  res.json(orders);
+});
+
+// Search orders (admin)
+app.get('/orders/search', verifyToken, async (req, res) => {
+  const q = req.query.q?.trim();
+  if (!q) return res.json([]);
+
+  const results = await db.collection('orders').find({
+    $or: [
+      { orderNumber: { $regex: q, $options: 'i' } },
+      { name: { $regex: q, $options: 'i' } },
+      { phone: { $regex: q, $options: 'i' } },
+      { notes: { $regex: q, $options: 'i' } }
+    ]
+  }).toArray();
+
+  res.json(results);
+});
+
+// Mark order as done
+app.patch('/orders/:id/done', verifyToken, async (req, res) => {
+  const { id } = req.params;
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid ID' });
+
+  const result = await db.collection('orders').updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { status: 'done', completedAt: new Date() } }
+  );
+
+  if (result.matchedCount === 0) return res.status(404).json({ error: 'Order not found' });
+  res.json({ success: true });
+});
 
 // List all orders
 app.get('/orders', verifyToken, async (req, res) => {

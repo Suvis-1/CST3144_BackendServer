@@ -52,11 +52,10 @@ function normalizeLessons(lessons) {
   return lessons.map(l => ({ ...l, totalSpace: l.space }));
 }
 
-// ***** Auth Route for Admin Panel *****
+// ***** AUTH *****
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
   if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
-    // issue JWT with 1h expiry
     const token = jwt.sign({ user: username }, process.env.JWT_SECRET, { expiresIn: '1h' });
     res.json({ token });
   } else {
@@ -64,212 +63,149 @@ app.post('/login', (req, res) => {
   }
 });
 
-// Middleware to verify token (used only for admin routes)
 function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
   const token = authHeader.split(' ')[1];
   try {
-    jwt.verify(token, process.env.JWT_SECRET); // throws if expired/invalid
+    jwt.verify(token, process.env.JWT_SECRET);
     next();
-  } catch (err) {
-    return res.status(403).json({ error: 'Token expired or invalid' });
+  } catch {
+    res.status(403).json({ error: 'Invalid/expired token' });
   }
 }
 
-// ***** Customer Routes  *****
-
-// Get all lessons
+// ***** PUBLIC ROUTES *****
 app.get('/lessons', async (req, res) => {
   try {
     const lessons = await db.collection('lessons').find({}).toArray();
     res.json(normalizeLessons(lessons));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Search lessons
 app.get('/search', async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.status(400).json({ error: 'Query parameter "q" required' });
+  const q = req.query.q?.trim();
+  if (!q) return res.status(400).json({ error: 'Query required' });
   try {
     const conditions = [
       { topic: { $regex: q, $options: 'i' } },
       { location: { $regex: q, $options: 'i' } }
     ];
     const num = Number(q);
-    if (!isNaN(num)) { conditions.push({ price: num }); conditions.push({ space: num }); }
+    if (!isNaN(num)) conditions.push({ price: num }, { space: num });
     const lessons = await db.collection('lessons').find({ $or: conditions }).toArray();
     res.json(normalizeLessons(lessons));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Place order
+// ***** PLACE ORDER — decrements spaces on server *****
 app.post('/orders', async (req, res) => {
   try {
     const { name, phone, lessons, notes } = req.body;
 
-    // Validate name
-    if (!name || !/^[A-Za-z\s]{2,50}$/.test(name)) {
-      return res.status(400).json({ error: 'Name must be 2–50 letters only' });
-    }
+    // Validation
+    if (!name || !/^[A-Za-z\s]{2,50}$/.test(name))
+      return res.status(400).json({ error: 'Invalid name' });
+    if (!phone || !/^0\d{10}$/.test(phone))
+      return res.status(400).json({ error: 'Invalid phone' });
+    if (!Array.isArray(lessons) || lessons.length === 0)
+      return res.status(400).json({ error: 'Select at least one lesson' });
 
-    // Validate UK phone number
-    if (!phone || !/^0\d{10}$/.test(phone)) {
-      return res.status(400).json({ error: 'Phone must start with 0 and be exactly 11 digits' });
-    }
-
-    // Validate lessons
-    if (!Array.isArray(lessons) || lessons.length === 0) {
-      return res.status(400).json({ error: 'Lessons must be a non-empty array' });
-    }
-    for (const lesson of lessons) {
-      if (!lesson.id || !ObjectId.isValid(lesson.id)) {
-        return res.status(400).json({ error: 'Invalid lesson ID' });
-      }
-      if (!Number.isInteger(lesson.qty) || lesson.qty <= 0) {
-        return res.status(400).json({ error: 'Quantity must be a positive integer' });
-      }
-    }
-
-    if (notes && notes.length > 250) {
-      return res.status(400).json({ error: 'Notes must be 250 characters or fewer' });
-    }
-
-    // Decrement availability
-    for (const lesson of lessons) {
+    // Decrease spaces
+    for (const l of lessons) {
       const result = await db.collection('lessons').updateOne(
-        { _id: new ObjectId(lesson.id), space: { $gte: lesson.qty } },
-        { $inc: { space: -lesson.qty } }
+        { _id: new ObjectId(l.id), space: { $gte: l.qty } },
+        { $inc: { space: -l.qty } }
       );
-      if (result.matchedCount === 0) {
-        return res.status(400).json({ error: `Not enough availability for lesson ${lesson.id}` });
-      }
+      if (result.matchedCount === 0)
+        return res.status(400).json({ error: `Not enough space for lesson ${l.id}` });
     }
 
-    const order = { name, phone, lessons, notes: notes || '', createdAt: new Date() };
+    const order = {
+      name,
+      phone,
+      lessons: lessons.map(l => ({ lessonId: new ObjectId(l.id), qty: l.qty })),
+      notes: notes || '',
+      status: 'pending',
+      createdAt: new Date()
+    };
+
     const result = await db.collection('orders').insertOne(order);
     res.json({ insertedId: result.insertedId });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
 
-// Update lesson (this is to decrement spaces after customers order)
-app.put('/lessons/:id', async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
-  const update = req.body;
-  const allowed = ['topic', 'location', 'price', 'space', 'icon'];
-  const invalidKeys = Object.keys(update).filter(k => !allowed.includes(k));
-  if (invalidKeys.length > 0) {
-    return res.status(400).json({ error: `Invalid fields: ${invalidKeys.join(', ')}` });
+  } catch (err) {
+    console.error('Order creation error:', err);
+    res.status(500).json({ error: err.message });
   }
-
-  try {
-    if (update.space !== undefined && (typeof update.space !== 'number' || update.space < 0)) {
-      return res.status(400).json({ error: 'Space must be non‑negative number' });
-    }
-    if (update.price !== undefined && (typeof update.price !== 'number' || update.price < 0)) {
-      return res.status(400).json({ error: 'Price must be non‑negative number' });
-    }
-    if (update.topic && (typeof update.topic !== 'string' || update.topic.length > 50)) {
-      return res.status(400).json({ error: 'Topic must be string up to 50 chars' });
-    }
-    if (update.location && (typeof update.location !== 'string' || update.location.length > 50)) {
-      return res.status(400).json({ error: 'Location must be string up to 50 chars' });
-    }
-    if (update.icon && (typeof update.icon !== 'string' || !update.icon.endsWith('.png'))) {
-      return res.status(400).json({ error: 'Icon must be a .png filename' });
-    }
-
-    const result = await db.collection('lessons').updateOne(
-      { _id: new ObjectId(id) },
-      { $set: update }
-    );
-    if (result.matchedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
-    res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ***** Admin Routes *****
+// ***** ADMIN ROUTES *****
 
-// List all orders
+// View all orders
 app.get('/orders', verifyToken, async (req, res) => {
   try {
-    const orders = await db.collection('orders').find({}).toArray();
+    const orders = await db.collection('orders')
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
     res.json(orders);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-//  SEARCH ORDERS
+// Search orders
 app.get('/orders/search', verifyToken, async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.json([]);
-
   try {
     const results = await db.collection('orders').find({
       $or: [
         { name: { $regex: q, $options: 'i' } },
         { phone: { $regex: q, $options: 'i' } },
         { notes: { $regex: q, $options: 'i' } },
-        { _id: { $regex: q, $options: 'i' } } // allows searching by MongoID
+        { _id: { $regex: q, $options: 'i' } }
       ]
     }).sort({ createdAt: -1 }).toArray();
-
     res.json(results);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-//  MARK ORDER AS DONE 
+// Mark order as done
 app.patch('/orders/:id/done', verifyToken, async (req, res) => {
   const { id } = req.params;
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).json({ error: 'Invalid order ID' });
-  }
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid ID' });
 
   try {
     const result = await db.collection('orders').updateOne(
       { _id: new ObjectId(id) },
-      { 
-        $set: { 
-          status: 'done',
-          completedAt: new Date()
-        }
-      }
+      { $set: { status: 'done', completedAt: new Date() } }
     );
 
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Order not found' });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Create new lesson
+// ***** LESSONS ADMIN  *****
+
+// Create lesson
 app.post('/lessons', verifyToken, async (req, res) => {
   const { topic, location, price, space, icon } = req.body;
-
-  if (!topic || !location || !icon) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-  if (typeof topic !== 'string' || topic.length > 50) {
-    return res.status(400).json({ error: 'Topic must be string up to 50 chars' });
-  }
-  if (typeof location !== 'string' || location.length > 50) {
-    return res.status(400).json({ error: 'Location must be string up to 50 chars' });
-  }
-  if (typeof price !== 'number' || price < 0) {
-    return res.status(400).json({ error: 'Price must be non‑negative number' });
-  }
-  if (typeof space !== 'number' || space < 0) {
-    return res.status(400).json({ error: 'Space must be non‑negative number' });
-  }
-  if (typeof icon !== 'string' || !icon.endsWith('.png')) {
-    return res.status(400).json({ error: 'Icon must be a .png filename' });
-  }
+  if (!topic || !location || !icon) return res.status(400).json({ error: 'Missing fields' });
+  if (typeof topic !== 'string' || topic.length > 50) return res.status(400).json({ error: 'Invalid topic' });
+  if (typeof location !== 'string' || location.length > 50) return res.status(400).json({ error: 'Invalid location' });
+  if (typeof price !== 'number' || price < 0) return res.status(400).json({ error: 'Invalid price' });
+  if (typeof space !== 'number' || space < 0) return res.status(400).json({ error: 'Invalid space' });
+  if (typeof icon !== 'string' || !icon.endsWith('.png')) return res.status(400).json({ error: 'Invalid icon' });
 
   try {
     const lesson = { topic, location, price, space, icon, totalSpace: space };
@@ -280,10 +216,45 @@ app.post('/lessons', verifyToken, async (req, res) => {
   }
 });
 
+// EDIT LESSON 
+app.put('/lessons/:id', verifyToken, async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
+
+  const update = req.body;
+  const allowed = ['topic', 'location', 'price', 'space', 'icon'];
+  const invalidKeys = Object.keys(update).filter(k => !allowed.includes(k));
+  if (invalidKeys.length > 0) return res.status(400).json({ error: `Invalid fields: ${invalidKeys.join(', ')}` });
+
+  try {
+    // Validation
+    if (update.topic && (typeof update.topic !== 'string' || update.topic.length > 50))
+      return res.status(400).json({ error: 'Topic too long' });
+    if (update.location && (typeof update.location !== 'string' || update.location.length > 50))
+      return res.status(400).json({ error: 'Location too long' });
+    if (update.price !== undefined && (typeof update.price !== 'number' || update.price < 0))
+      return res.status(400).json({ error: 'Invalid price' });
+    if (update.space !== undefined && (typeof update.space !== 'number' || update.space < 0))
+      return res.status(400).json({ error: 'Invalid space' });
+    if (update.icon && !update.icon.endsWith('.png'))
+      return res.status(400).json({ error: 'Icon must be .png' });
+
+    const result = await db.collection('lessons').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: update }
+    );
+
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Delete lesson
 app.delete('/lessons/:id', verifyToken, async (req, res) => {
   const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid lesson ID' });
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid ID' });
   try {
     const result = await db.collection('lessons').deleteOne({ _id: new ObjectId(id) });
     if (result.deletedCount === 0) return res.status(404).json({ error: 'Lesson not found' });
@@ -293,16 +264,14 @@ app.delete('/lessons/:id', verifyToken, async (req, res) => {
   }
 });
 
-// Icons management
+// ***** ICONS *****
 const ICONS_DIR = path.join(__dirname, 'public/images');
 if (!fs.existsSync(ICONS_DIR)) fs.mkdirSync(ICONS_DIR);
 
 const storage = multer.diskStorage({
   destination: ICONS_DIR,
   filename: (req, file, cb) => {
-    if (!file.originalname.endsWith('.png')) {
-      return cb(new Error('Only .png files allowed'));
-    }
+    if (!file.originalname.endsWith('.png')) return cb(new Error('Only .png allowed'));
     cb(null, file.originalname);
   }
 });
@@ -311,7 +280,7 @@ const upload = multer({ storage });
 app.get('/icons', async (req, res) => {
   try {
     const files = fs.readdirSync(ICONS_DIR);
-    res.json(files);
+    res.json(files.filter(f => f.endsWith('.png')));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -321,10 +290,10 @@ app.post('/icons', verifyToken, upload.single('file'), (req, res) => {
   res.json({ filename: req.file.originalname });
 });
 
-// 404 fallback
+// 404
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 
-// Start server
+// Start
 connectDB().then(() => {
   app.listen(port, () => console.log(`Server running on port ${port}`));
 });

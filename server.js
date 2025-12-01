@@ -1,3 +1,7 @@
+// server.js
+// Full-Stack After-School Club Backend
+// Features: Public lesson browsing, cart checkout, admin panel with CRUD for lessons and order management
+
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const path = require('path');
@@ -20,7 +24,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve images
+// Static images function
 app.get('/images/:filename', (req, res) => {
   const filePath = path.join(__dirname, 'public/images', req.params.filename);
   res.sendFile(filePath, (err) => {
@@ -76,6 +80,7 @@ function verifyToken(req, res, next) {
 }
 
 // ***** PUBLIC ROUTES *****
+
 app.get('/lessons', async (req, res) => {
   try {
     const lessons = await db.collection('lessons').find({}).toArray();
@@ -144,7 +149,7 @@ app.post('/orders', async (req, res) => {
 });
 
 // ***** ADMIN ROUTES *****
-
+// All routes below require valid JWT token via verifyToken middleware
 // View all orders
 app.get('/orders', verifyToken, async (req, res) => {
   try {

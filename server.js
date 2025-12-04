@@ -24,6 +24,28 @@ app.use((req, res, next) => {
   next();
 });
 
+// CORS configuration
+const allowedOrigins = [
+  'https://suvis-1.github.io',   // GitHub Pages frontend
+  'http://localhost:3000'        // local dev
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+
+
 // Static images function
 app.get('/images/:filename', (req, res) => {
   const filePath = path.join(__dirname, 'public/images', req.params.filename);
